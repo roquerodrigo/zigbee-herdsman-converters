@@ -855,7 +855,7 @@ export const definitions: DefinitionWithExtend[] = [
             m.temperature({reporting: false}),
             m.humidity({reporting: false}),
             m.occupancy({reporting: false}),
-            m.co2({scale: 1, reporting: false}),
+            m.co2({reporting: false}),
             // Custom attributes
             m.numeric({
                 name: "noise_level",
@@ -1075,7 +1075,7 @@ export const definitions: DefinitionWithExtend[] = [
     {
         zigbeeModel: ["WBMSW3"],
         model: "WB-MSW-ZIGBEE v.3",
-        vendor: "Wirenboard",
+        vendor: "Wiren Board",
         description: "Wall-mounted multi sensor",
         fromZigbee: [
             fzLocal.temperature,
@@ -1230,7 +1230,7 @@ export const definitions: DefinitionWithExtend[] = [
     {
         zigbeeModel: ["WBMSW4"],
         model: "WB-MSW-ZIGBEE v.4",
-        vendor: "Wirenboard",
+        vendor: "Wiren Board",
         description: "Wall-mounted multi sensor",
         extend: [
             addSprutVocCluster(),

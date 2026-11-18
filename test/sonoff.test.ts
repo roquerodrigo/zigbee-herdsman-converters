@@ -647,13 +647,11 @@ describe("Sonoff SWV-ZFE", () => {
         endpoint = {write: writeFn, command: commandFn} as unknown as ZHModels.Endpoint;
         meta = {
             state: {
-                manual_default_settings: {
-                    irrigation_duration: 15,
-                    irrigation_mode: "capacity",
-                    irrigation_amount_unit: "liter",
-                    irrigation_amount: 42,
-                    fail_safe: 60,
-                },
+                irrigation_duration: 15,
+                irrigation_mode: "capacity",
+                irrigation_amount_unit: "liter",
+                irrigation_amount: 42,
+                fail_safe: 60,
                 seasonal_watering_adjustment: {
                     january: 1.1,
                     february: 1.2,
@@ -710,18 +708,186 @@ describe("Sonoff SWV-ZFE", () => {
         };
     });
 
-    describe("toZigbee", () => {
-        it("sends manual default settings to device", async () => {
-            const tzConverter = device.toZigbee.find((c) => c.key.includes("manual_default_settings"));
+    it("exposes manual irrigation settings as scalar controls", () => {
+        const exposes =
+            typeof device.exposes === "function" ? device.exposes(mockDevice({modelID: "SWV-ZFE", endpoints: [{ID: 1}]}), {}) : device.exposes;
+        const names = exposes.map((expose) => expose.property);
 
-            const value = {
+        expect(names).toContain("irrigation_duration");
+        expect(names).toContain("irrigation_mode");
+        expect(names).toContain("irrigation_amount_unit");
+        expect(names).toContain("irrigation_amount");
+        expect(names).toContain("fail_safe");
+    });
+
+    it("hides manual amount unit on firmware with unified water-flow units", () => {
+        const newFirmwareDevice = mockDevice({modelID: "SWV-ZFE", softwareBuildID: "1.1.0", endpoints: [{ID: 1}]});
+        const exposes = typeof device.exposes === "function" ? device.exposes(newFirmwareDevice, {}) : device.exposes;
+        const names = exposes.map((expose) => expose.property);
+
+        expect(names).not.toContain("irrigation_amount_unit");
+    });
+
+    it("uses the unified water-flow unit instead of a stale legacy unit", async () => {
+        const newFirmwareDevice = mockDevice({modelID: "SWV-ZFE", softwareBuildID: "1.1.0", endpoints: [{ID: 1}]});
+        const tzConverter = device.toZigbee.find((converter) => converter.key.includes("irrigation_duration"));
+        const result = await tzConverter.convertSet(endpoint, "irrigation_duration", 30, {
+            ...meta,
+            device: newFirmwareDevice,
+            state: {
+                irrigation_duration: 15,
+                irrigation_mode: "capacity",
+                irrigation_amount_unit: "liter",
+                irrigation_amount: 3,
+                fail_safe: 60,
+                water_flow_unit: "us_gallon",
+            },
+        });
+
+        expect(writeFn).toHaveBeenCalledWith(
+            "customClusterEwelink",
+            {
+                20509: {
+                    value: {
+                        elementType: 0x20,
+                        elements: new Uint8Array([1, 0, 30, 0, 30, 0, 10, 0, 0, 3, 0, 60]),
+                    },
+                    type: 0x48,
+                },
+            },
+            {},
+        );
+        expect(result).toMatchObject({state: {irrigation_amount: 3}});
+    });
+
+    it("preserves the real liter amount when an OTA-updated device first reports its unified unit", () => {
+        const newFirmwareDevice = mockDevice({modelID: "SWV-ZFE", softwareBuildID: "1.1.0", endpoints: [{ID: 1}]});
+        const message = {
+            data: {unitOfWaterFlow: 1},
+            endpoint: endpoint,
+            device: newFirmwareDevice,
+            meta: {},
+            groupID: 0,
+            type: "attributeReport" as const,
+        };
+        const converterMeta = {
+            state: {
+                irrigation_amount_unit: "liter",
+                irrigation_amount: 10,
+            },
+            device: newFirmwareDevice,
+            deviceExposesChanged: null,
+        };
+        const fzConverter = device.fromZigbee.find(
+            (converter) => converter.convert(device, message, vi.fn(), {}, converterMeta)?.water_flow_unit !== undefined,
+        );
+        const result = fzConverter.convert(device, message, vi.fn(), {}, converterMeta);
+
+        expect(result).toEqual({
+            water_flow_unit: "us_gallon",
+            irrigation_amount: 3,
+            irrigation_amount_real_liter: 10,
+            irrigation_amount_unit: null,
+        });
+    });
+
+    it("uses the real liter amount for every later water-flow unit change", async () => {
+        const newFirmwareDevice = mockDevice({modelID: "SWV-ZFE", softwareBuildID: "1.1.0", endpoints: [{ID: 1}]});
+        const tzConverter = device.toZigbee.find((converter) => converter.key.includes("water_flow_unit"));
+        const result = await tzConverter.convertSet(endpoint, "water_flow_unit", "imperial_gallon", {
+            ...meta,
+            device: newFirmwareDevice,
+            state: {
+                water_flow_unit: "us_gallon",
+                irrigation_amount: 3,
+                irrigation_amount_real_liter: 10,
+            },
+        });
+
+        expect(result).toEqual({
+            state: {
+                water_flow_unit: "imperial_gallon",
+                irrigation_amount: 2,
+                irrigation_amount_real_liter: 10,
+            },
+        });
+    });
+
+    it("does not clear a legacy amount unit when the reported unit is unchanged", () => {
+        const newFirmwareDevice = mockDevice({modelID: "SWV-ZFE", softwareBuildID: "1.1.0", endpoints: [{ID: 1}]});
+        const message = {
+            data: {unitOfWaterFlow: 1},
+            endpoint,
+            device: newFirmwareDevice,
+            meta: {},
+            groupID: 0,
+            type: "attributeReport" as const,
+        };
+        const converterMeta = {
+            state: {
+                irrigation_amount_unit: "us_gallon",
+                irrigation_amount: 3,
+            },
+            device: newFirmwareDevice,
+            deviceExposesChanged: null,
+        };
+        const fzConverter = device.fromZigbee.find(
+            (converter) => converter.convert(device, message, vi.fn(), {}, converterMeta)?.water_flow_unit !== undefined,
+        );
+        const result = fzConverter.convert(device, message, vi.fn(), {}, converterMeta);
+
+        expect(result).toEqual({water_flow_unit: "us_gallon"});
+    });
+
+    it("does not clear a legacy amount unit when setting the same unit", async () => {
+        const newFirmwareDevice = mockDevice({modelID: "SWV-ZFE", softwareBuildID: "1.1.0", endpoints: [{ID: 1}]});
+        const tzConverter = device.toZigbee.find((converter) => converter.key.includes("water_flow_unit"));
+        const result = await tzConverter.convertSet(endpoint, "water_flow_unit", "us_gallon", {
+            ...meta,
+            device: newFirmwareDevice,
+            state: {
+                water_flow_unit: "us_gallon",
+                irrigation_amount_unit: "us_gallon",
+                irrigation_amount: 3,
+            },
+        });
+
+        expect(result).toEqual({state: {water_flow_unit: "us_gallon"}});
+    });
+
+    it("merges a scalar manual setting with current scalar state", async () => {
+        const tzConverter = device.toZigbee.find((converter) => converter.key.includes("irrigation_duration"));
+
+        const result = await tzConverter.convertSet(endpoint, "irrigation_duration", 30, meta);
+
+        expect(writeFn).toHaveBeenCalledWith(
+            "customClusterEwelink",
+            {
+                20509: {
+                    value: {
+                        elementType: 0x20,
+                        elements: new Uint8Array([1, 0, 30, 0, 30, 0, 10, 1, 0, 42, 0, 60]),
+                    },
+                    type: 0x48,
+                },
+            },
+            {},
+        );
+        expect(result).toMatchObject({
+            state: {
                 irrigation_duration: 30,
                 irrigation_mode: "capacity",
                 irrigation_amount_unit: "liter",
                 irrigation_amount: 42,
                 fail_safe: 60,
-            };
-            const result = await tzConverter.convertSet(endpoint, "manual_default_settings", value, meta);
+            },
+        });
+    });
+
+    describe("toZigbee", () => {
+        it("fills missing scalar settings with defaults on first write", async () => {
+            const tzConverter = device.toZigbee.find((c) => c.key.includes("irrigation_duration"));
+            const result = await tzConverter.convertSet(endpoint, "irrigation_duration", 30, {...meta, state: {}});
 
             expect(writeFn).toHaveBeenCalledWith(
                 "customClusterEwelink",
@@ -729,7 +895,7 @@ describe("Sonoff SWV-ZFE", () => {
                     20509: {
                         value: {
                             elementType: 0x20,
-                            elements: new Uint8Array([1, 0, 30, 0, 30, 0, 10, 1, 0, 42, 0, 60]),
+                            elements: new Uint8Array([0, 0, 30, 0, 30, 0, 10, 1, 0, 0, 0, 0]),
                         },
                         type: 0x48,
                     },
@@ -738,7 +904,11 @@ describe("Sonoff SWV-ZFE", () => {
             );
             expect(result).toEqual({
                 state: {
-                    manual_default_settings: value,
+                    irrigation_duration: 30,
+                    irrigation_mode: "duration",
+                    irrigation_amount_unit: "liter",
+                    irrigation_amount: 0,
+                    fail_safe: 0,
                 },
             });
         });
@@ -902,6 +1072,77 @@ describe("Sonoff SWV-ZFE", () => {
                     irrigation_plan_settings_3: null,
                 },
             });
+        });
+    });
+});
+
+describe("Sonoff TP-WGZBA", () => {
+    describe("NTC temperature", () => {
+        let device: Definition;
+        // biome-ignore lint/suspicious/noExplicitAny: generic
+        let fzConverter: Fz.Converter<any, any, any>;
+
+        const message = (data: Record<string, unknown>) =>
+            ({
+                data,
+                endpoint: null,
+                device: null,
+                meta: {},
+                groupID: 0,
+                type: "attributeReport",
+                cluster: "customSonoffTpWgzba",
+                linkquality: 0,
+            }) as Fz.Message;
+        const meta = {state: {}, device: null, deviceExposesChanged: null} as Fz.Meta;
+        const convert = (data: Record<string, unknown>) => fzConverter.convert(device, message(data), vi.fn(), {}, meta);
+
+        beforeEach(async () => {
+            device = await findByDevice(mockDevice({modelID: "TP-WGZBA", endpoints: [{ID: 1}]}));
+            fzConverter = device.fromZigbee.find(
+                (c) =>
+                    c.cluster === "customSonoffTpWgzba" &&
+                    c.convert(device, message({currentNtcTemperature: 0}), vi.fn(), {}, meta)?.ntc_sensor_status !== undefined,
+            );
+        });
+
+        it("exposes the temperature as a numeric sensor and the status as a diagnostic enum", () => {
+            const exposes = device.exposes as {
+                name: string;
+                type: string;
+                unit?: string;
+                category?: string;
+                homeassistant?: {enabledByDefault?: boolean};
+            }[];
+            const temperature = exposes.find((expose) => expose.name === "ntc_temperature");
+            const status = exposes.find((expose) => expose.name === "ntc_sensor_status");
+
+            expect(temperature).toMatchObject({type: "numeric", unit: "°C", homeassistant: {enabledByDefault: false}});
+            expect(temperature.category).toBeUndefined();
+            expect(status).toMatchObject({type: "enum", category: "diagnostic"});
+            expect(status.homeassistant?.enabledByDefault).toBeUndefined();
+        });
+
+        it.each([
+            [2150, 21.5],
+            [0, 0],
+            [-550, -5.5],
+        ])("converts raw %s to %s °C", (raw, expected) => {
+            expect(convert({currentNtcTemperature: raw})).toEqual({ntc_temperature: expected, ntc_sensor_status: "ok"});
+        });
+
+        it.each([
+            [0x8000, "invalid_unknown"],
+            [0x8100, "not_connected"],
+            [0x8200, "short_circuit"],
+            [0x8300, "adc_invalid"],
+            [-32768, "invalid_unknown"],
+            [-30000, "invalid_unknown"],
+        ])("reports raw %s as fault %s with a null temperature", (raw, status) => {
+            expect(convert({currentNtcTemperature: raw})).toEqual({ntc_temperature: null, ntc_sensor_status: status});
+        });
+
+        it("ignores messages without the NTC attribute", () => {
+            expect(convert({})).toBeUndefined();
         });
     });
 });

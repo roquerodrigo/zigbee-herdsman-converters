@@ -28,6 +28,7 @@ describe("Plugwise 170-01 (Emma)", () => {
             {property: "external_heat_demand_timeout", attribute: "plugwiseExternalHeatDemandTimeout", input: 600, raw: 600},
             {property: "max_dhw_setpoint", attribute: "plugwiseMaxDhwSetpoint", input: 65, raw: 6500},
             {property: "max_boiler_setpoint", attribute: "plugwiseMaxBoilerSetpoint", input: 75, raw: 7500},
+            {property: "override_outdoor_temperature", attribute: "plugwiseOutdoorTemp", input: -5.5, raw: -550},
         ];
 
         beforeEach(() => {
@@ -38,24 +39,22 @@ describe("Plugwise 170-01 (Emma)", () => {
             meta = {endpoint_name: null} as unknown as Tz.Meta;
         });
 
-        it.each(cases)("$property convertSet writes the scaled value with the Plugwise manufacturer code", async ({
-            property,
-            attribute,
-            input,
-            raw,
-        }) => {
-            // Arrange
-            const converter = emma.toZigbee?.find((c) => c.key.includes(property));
-            if (!converter?.convertSet) throw new Error(`No toZigbee convertSet for '${property}'`);
+        it.each(cases)(
+            "$property convertSet writes the scaled value with the Plugwise manufacturer code",
+            async ({property, attribute, input, raw}) => {
+                // Arrange
+                const converter = emma.toZigbee?.find((c) => c.key.includes(property));
+                if (!converter?.convertSet) throw new Error(`No toZigbee convertSet for '${property}'`);
 
-            // Act
-            const result = await converter.convertSet(endpoint, property, input, meta);
+                // Act
+                const result = await converter.convertSet(endpoint, property, input, meta);
 
-            // Assert
-            expect(writeFn).toHaveBeenCalledTimes(1);
-            expect(writeFn).toHaveBeenCalledWith("hvacThermostat", {[attribute]: raw}, PLUGWISE_MFG);
-            expect(result).toStrictEqual({state: {[property]: input}});
-        });
+                // Assert
+                expect(writeFn).toHaveBeenCalledTimes(1);
+                expect(writeFn).toHaveBeenCalledWith("hvacThermostat", {[attribute]: raw}, PLUGWISE_MFG);
+                expect(result).toStrictEqual({state: {[property]: input}});
+            },
+        );
 
         it.each(cases)("$property convertGet reads the attribute with the Plugwise manufacturer code", async ({property, attribute}) => {
             // Arrange
@@ -98,6 +97,39 @@ describe("Plugwise 170-01 (Emma)", () => {
                 // Assert
                 expect(readFn).toHaveBeenCalledTimes(1);
                 expect(readFn).toHaveBeenCalledWith("genPowerCfg", ["plugwiseBatteryType"], PLUGWISE_MFG);
+            });
+        });
+
+        describe("weather_icon (Plugwise hvacThermostat mfg attribute)", () => {
+            it.each([
+                ["clear_day", 0x00],
+                ["rain_day", 0x09],
+                ["shower_rain", 0x10],
+                ["snow", 0x11],
+            ])("convertSet '%s' writes value %i to hvacThermostat with the Plugwise manufacturer code", async (value, raw) => {
+                // Arrange
+                const converter = emma.toZigbee?.find((c) => c.key.includes("weather_icon"));
+                if (!converter?.convertSet) throw new Error("No toZigbee convertSet for 'weather_icon'");
+
+                // Act
+                await converter.convertSet(endpoint, "weather_icon", value, meta);
+
+                // Assert
+                expect(writeFn).toHaveBeenCalledTimes(1);
+                expect(writeFn).toHaveBeenCalledWith("hvacThermostat", {plugwiseWeatherIcon: raw}, PLUGWISE_MFG);
+            });
+
+            it("convertGet reads weather_icon with the Plugwise manufacturer code", async () => {
+                // Arrange
+                const converter = emma.toZigbee?.find((c) => c.key.includes("weather_icon"));
+                if (!converter?.convertGet) throw new Error("No toZigbee convertGet for 'weather_icon'");
+
+                // Act
+                await converter.convertGet(endpoint, "weather_icon", meta);
+
+                // Assert
+                expect(readFn).toHaveBeenCalledTimes(1);
+                expect(readFn).toHaveBeenCalledWith("hvacThermostat", ["plugwiseWeatherIcon"], PLUGWISE_MFG);
             });
         });
     });
